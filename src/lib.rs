@@ -6,25 +6,20 @@
 
 use std::collections::HashMap;
 
-// An offset into some &str or &[T] or something that we're parsing.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Input(usize);
+pub mod prelude;
 
-impl Input {
-    fn next(&self) -> Input {
-        Input(1 + self.0)
-    }
-}
-
+// An offset into whatever we're parsing.
+pub type Cursor = usize;
 pub type Terminal = char;
+pub type NonTerminal = u32;
+pub type Label = Option<u32>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Label {
-    Fail,
-    Other,
+pub trait Input {
+    fn at_cursor(&self, cursor: Cursor) -> Option<Terminal>;
+    fn next(&self, cursor: Cursor) -> Cursor;
 }
 
-pub struct Out(Result<Input, Label>, Option<Input>, Vec<(Input, Label)>);
+pub struct Out(Result<Cursor, Label>, Option<Cursor>, Vec<(Cursor, Label)>);
 
 pub enum Rule {
     Empty,
@@ -37,54 +32,25 @@ pub enum Rule {
     Throw(Label),
 }
 
-/// p1 p2
-pub fn seq(p1: Rule, p2: Rule) -> Rule {
-    Rule::Sequence(Box::new((p1, p2)))
-}
-
-/// p1 | p2
-pub fn alt(p1: Rule, p2: Rule) -> Rule {
-    Rule::OrderedChoice(Box::new((p1, p2)))
-}
-
-/// p*
-pub fn star(p: Rule) -> Rule {
-    Rule::Repeat(Box::new(p))
-}
-
-/// !p
-pub fn not(p: Rule) -> Rule {
-    Rule::Not(Box::new(p))
-}
-
-/// ^label
-pub fn throw(label: Label) -> Rule {
-    Rule::Throw(label)
-}
-
-/// [p]^l, i.e. (p | ^l)
-pub fn label(rule: Rule, label: Label) -> Rule {
-    Rule::OrderedChoice(Box::new((rule, Rule::Throw(label))))
-}
-
 pub struct Recover {
     pub strategies: HashMap<Label, Rule>,
 }
 
-type NonTerminal = u32;
-
-pub struct Grammar {
-    input: Vec<Terminal>,
+pub struct Grammar<I> {
+    input: I,
     rules: HashMap<NonTerminal, Rule>,
     strategies: HashMap<Label, Rule>,
 }
 
-impl Grammar {
-    pub fn peek(&self, x: Input) -> Option<Terminal> {
-        self.input.get(x.0).cloned()
+impl<I> Grammar<I>
+where
+    I: Input,
+{
+    pub fn peek(&self, x: Cursor) -> Option<Terminal> {
+        self.input.at_cursor(x)
     }
 
-    pub fn peg(&self, p: &Rule, x: Input) -> Out {
+    pub fn peg(&self, p: &Rule, x: Cursor) -> Out {
         match p {
             Rule::Empty => self.empty_1(x),
             Rule::Terminal(a) => self.terminal(*a, x),
@@ -97,29 +63,29 @@ impl Grammar {
         }
     }
 
-    fn empty_1(&self, x: Input) -> Out {
+    fn empty_1(&self, x: Cursor) -> Out {
         Out(Ok(x), None, Vec::new())
     }
 
-    fn terminal(&self, a: Terminal, ax: Input) -> Out {
+    fn terminal(&self, a: Terminal, ax: Cursor) -> Out {
         match self.peek(ax) {
             // term_1
-            Some(b) if b == a => Out(Ok(ax.next()), None, Vec::new()),
+            Some(b) if b == a => Out(Ok(self.input.next(ax)), None, Vec::new()),
             // term_2
-            Some(_) => Out(Err(Label::Fail), Some(ax), Vec::new()),
+            Some(_) => Out(Err(None), Some(ax), Vec::new()),
             // term_3
-            None => Out(Err(Label::Fail), Some(ax), Vec::new()),
+            None => Out(Err(None), Some(ax), Vec::new()),
         }
     }
 
     /// both var_1 and var_1
-    fn non_terminal(&self, pa: &NonTerminal, x: Input) -> Out {
+    fn non_terminal(&self, pa: &NonTerminal, x: Cursor) -> Out {
         let a = &self.rules[pa];
         self.peg(a, x)
     }
 
     /// seq_{1-4}
-    fn sequence(&self, p1: &Rule, p2: &Rule, x: Input) -> Out {
+    fn sequence(&self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
         let out_1: Out = self.peg(p1, x);
 
         // seq_4 is when p1 fails or throws
@@ -129,11 +95,11 @@ impl Grammar {
 
         let out_2 = self.peg(p2, x2);
 
-        if let Err(Label::Fail) = out_2.0 {
+        if let Err(None) = out_2.0 {
             // seq_2 is when p2 fails
             let mut errors = out_1.2;
             errors.extend(out_2.2);
-            Out(Err(Label::Fail), min(out_1.1, out_2.1), errors)
+            Out(Err(None), min(out_1.1, out_2.1), errors)
         } else if let Err(l) = out_2.0 {
             // seq_3 is when p2 throws
             let mut errors = out_1.2;
@@ -148,7 +114,7 @@ impl Grammar {
         }
     }
 
-    fn ordered_choice(&self, p1: &Rule, p2: &Rule, x: Input) -> Out {
+    fn ordered_choice(&self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
         let mut out_1 = self.peg(p1, x);
 
         // ord.1
@@ -157,18 +123,18 @@ impl Grammar {
         }
 
         // ord.2
-        if matches!(out_1.0, Err(l) if l != Label::Fail) {
+        if matches!(out_1.0, Err(Some(_))) {
             return out_1;
         }
 
-        assert_eq!(out_1.0, Err(Label::Fail));
+        assert_eq!(out_1.0, Err(None));
 
         let out_2 = self.peg(p2, x);
 
         // ord.3
-        if out_2.0 == Err(Label::Fail) {
+        if out_2.0 == Err(None) {
             out_1.2.extend(out_2.2);
-            return Out(Err(Label::Fail), min(out_2.1, out_1.1), out_1.2);
+            return Out(Err(None), min(out_2.1, out_1.1), out_1.2);
         }
 
         // ord.4
@@ -184,12 +150,12 @@ impl Grammar {
 
     // This one's a bit different. rep.1 tells us to stop when we hit a
     // [`Label::Fail`] and return the input.
-    fn repeat(&self, p: &Rule, x: Input) -> Out {
+    fn repeat(&self, p: &Rule, x: Cursor) -> Out {
         let mut x = x;
         loop {
             let mut out = self.peg(p, x);
             match out.0 {
-                Err(Label::Fail) => {
+                Err(None) => {
                     out.0 = Ok(x);
                     return out;
                 }
@@ -205,16 +171,16 @@ impl Grammar {
     }
 
     // not_1 and not_2
-    fn not(&self, rule: &Rule, x: Input) -> Out {
+    fn not(&self, rule: &Rule, x: Cursor) -> Out {
         let out = self.peg(rule, x);
         if out.0.is_err() {
             Out(Ok(x), None, Vec::new())
         } else {
-            Out(Err(Label::Fail), None, Vec::new())
+            Out(Err(None), None, Vec::new())
         }
     }
 
-    fn throw(&self, l: &Label, x: Input) -> Out {
+    fn throw(&self, l: &Label, x: Cursor) -> Out {
         let Some(recovery) = self.strategies.get(l) else {
             // throw_1 is when l is not in R
             return Out(Err(*l), Some(x), Vec::new());
@@ -235,9 +201,9 @@ impl Grammar {
     }
 }
 
-fn min(lhs: Option<Input>, rhs: Option<Input>) -> Option<Input> {
+fn min(lhs: Option<Cursor>, rhs: Option<Cursor>) -> Option<Cursor> {
     match (lhs, rhs) {
-        (Some(Input(l)), Some(Input(r))) => Some(Input(l.max(r))),
+        (Some(l), Some(r)) => Some(l.max(r)),
         (Some(l), None) => Some(l),
         (None, Some(r)) => Some(r),
         _ => None,
