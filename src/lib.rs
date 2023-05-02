@@ -19,7 +19,7 @@ pub trait Input {
     fn next(&self, cursor: Cursor) -> Cursor;
 }
 
-pub struct Out(Result<Cursor, Label>, Option<Cursor>);
+pub struct Out(Result<Cursor, Label>);
 
 pub enum Rule {
     Empty,
@@ -46,6 +46,7 @@ pub struct Language {
 pub struct Parser<'l, I> {
     language: &'l Language,
     input: I,
+    furthest: Option<Cursor>,
     errors: Vec<(Cursor, Label)>,
 }
 
@@ -71,17 +72,23 @@ where
     }
 
     fn empty_1(&mut self, x: Cursor) -> Out {
-        Out(Ok(x), None)
+        Out(Ok(x))
     }
 
     fn terminal(&mut self, a: Terminal, ax: Cursor) -> Out {
         match self.input.at_cursor(ax) {
             // term_1
-            Some(b) if b == a => Out(Ok(self.input.next(ax)), None),
+            Some(b) if b == a => Out(Ok(self.input.next(ax))),
             // term_2
-            Some(_) => Out(Err(None), Some(ax)),
+            Some(_) => {
+                self.furthest = Some(ax);
+                Out(Err(None))
+            }
             // term_3
-            None => Out(Err(None), Some(ax)),
+            None => {
+                self.furthest = Some(ax);
+                Out(Err(None))
+            }
         }
     }
 
@@ -100,18 +107,21 @@ where
             return out_1;
         };
 
+        let furthest_1 = self.furthest;
+
         let out_2 = self.peg(p2, x2);
 
         if let Err(None) = out_2.0 {
             // seq_2 is when p2 fails
-            Out(Err(None), min(out_1.1, out_2.1))
+            self.furthest = min(furthest_1, self.furthest);
+            Out(Err(None))
         } else if let Err(l) = out_2.0 {
             // seq_3 is when p2 throws
-            Out(Err(l), out_2.1)
+            Out(Err(l))
         } else {
             // seq_1 is when they both succeed
             assert!(out_1.0.is_ok() && out_2.0.is_ok());
-            Out(out_2.0, out_2.1)
+            Out(out_2.0)
         }
     }
 
@@ -130,20 +140,24 @@ where
 
         assert_eq!(out_1.0, Err(None));
 
+        let f1 = self.furthest;
         let out_2 = self.peg(p2, x);
+        let f2 = self.furthest;
+
+        self.furthest = min(f1, f2);
 
         // ord.3
         if out_2.0 == Err(None) {
-            return Out(Err(None), min(out_2.1, out_1.1));
+            return Out(Err(None));
         }
 
         // ord.4
         if let Ok(y) = out_2.0 {
-            return Out(Ok(y), min(out_2.1, out_1.1));
+            return Out(Ok(y));
         }
 
         // ord 5
-        Out(out_2.0, min(out_2.1, out_1.1))
+        Out(out_2.0)
     }
 
     // This one's a bit different. rep.1 tells us to stop when we hit a
@@ -172,22 +186,25 @@ where
     fn not(&mut self, rule: &Rule, x: Cursor) -> Out {
         // We don't want to keep any errors collected while running the rule.
         let errors = self.errors.len();
+        let furthest = self.furthest;
 
         let out = self.peg(rule, x);
 
         self.errors.truncate(errors);
+        self.furthest = furthest;
 
         if out.0.is_err() {
-            Out(Ok(x), None)
+            Out(Ok(x))
         } else {
-            Out(Err(None), None)
+            Out(Err(None))
         }
     }
 
     fn throw(&mut self, l: Label, x: Cursor) -> Out {
         let Some(recovery) = self.strategy(l) else {
             // throw_1 is when l is not in R
-            return Out(Err(l), Some(x));
+            self.furthest = Some(x);
+            return Out(Err(l));
         };
 
         let mut out = self.peg(recovery, x);
