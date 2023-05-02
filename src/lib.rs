@@ -19,7 +19,7 @@ pub trait Input {
     fn next(&self, cursor: Cursor) -> Cursor;
 }
 
-pub struct Out(Result<Cursor, Label>, Option<Cursor>, Vec<(Cursor, Label)>);
+pub struct Out(Result<Cursor, Label>, Option<Cursor>);
 
 pub enum Rule {
     Empty,
@@ -36,21 +36,28 @@ pub struct Recover {
     pub strategies: HashMap<Label, Rule>,
 }
 
-pub struct Grammar<I> {
-    input: I,
+/// We put these in a separate structure so that we can know the language
+/// definition doesn't change mid-parse.
+pub struct Language {
     rules: HashMap<NonTerminal, Rule>,
     strategies: HashMap<Label, Rule>,
 }
 
-impl<I> Grammar<I>
+pub struct Parser<'l, I> {
+    language: &'l Language,
+    input: I,
+    errors: Vec<(Cursor, Label)>,
+}
+
+impl<'l, I> Parser<'l, I>
 where
     I: Input,
 {
-    pub fn peek(&self, x: Cursor) -> Option<Terminal> {
-        self.input.at_cursor(x)
+    pub fn strategy(&self, label: Label) -> Option<&'l Rule> {
+        self.language.strategies.get(&label)
     }
 
-    pub fn peg(&self, p: &Rule, x: Cursor) -> Out {
+    pub fn peg(&mut self, p: &Rule, x: Cursor) -> Out {
         match p {
             Rule::Empty => self.empty_1(x),
             Rule::Terminal(a) => self.terminal(*a, x),
@@ -59,33 +66,33 @@ where
             Rule::OrderedChoice(ps) => self.ordered_choice(&ps.0, &ps.1, x),
             Rule::Repeat(p) => self.repeat(p, x),
             Rule::Not(p) => self.not(p, x),
-            Rule::Throw(l) => self.throw(l, x),
+            Rule::Throw(l) => self.throw(*l, x),
         }
     }
 
-    fn empty_1(&self, x: Cursor) -> Out {
-        Out(Ok(x), None, Vec::new())
+    fn empty_1(&mut self, x: Cursor) -> Out {
+        Out(Ok(x), None)
     }
 
-    fn terminal(&self, a: Terminal, ax: Cursor) -> Out {
-        match self.peek(ax) {
+    fn terminal(&mut self, a: Terminal, ax: Cursor) -> Out {
+        match self.input.at_cursor(ax) {
             // term_1
-            Some(b) if b == a => Out(Ok(self.input.next(ax)), None, Vec::new()),
+            Some(b) if b == a => Out(Ok(self.input.next(ax)), None),
             // term_2
-            Some(_) => Out(Err(None), Some(ax), Vec::new()),
+            Some(_) => Out(Err(None), Some(ax)),
             // term_3
-            None => Out(Err(None), Some(ax), Vec::new()),
+            None => Out(Err(None), Some(ax)),
         }
     }
 
     /// both var_1 and var_1
-    fn non_terminal(&self, pa: &NonTerminal, x: Cursor) -> Out {
-        let a = &self.rules[pa];
+    fn non_terminal(&mut self, pa: &NonTerminal, x: Cursor) -> Out {
+        let a = &self.language.rules[pa];
         self.peg(a, x)
     }
 
     /// seq_{1-4}
-    fn sequence(&self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
+    fn sequence(&mut self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
         let out_1: Out = self.peg(p1, x);
 
         // seq_4 is when p1 fails or throws
@@ -97,25 +104,19 @@ where
 
         if let Err(None) = out_2.0 {
             // seq_2 is when p2 fails
-            let mut errors = out_1.2;
-            errors.extend(out_2.2);
-            Out(Err(None), min(out_1.1, out_2.1), errors)
+            Out(Err(None), min(out_1.1, out_2.1))
         } else if let Err(l) = out_2.0 {
             // seq_3 is when p2 throws
-            let mut errors = out_1.2;
-            errors.extend(out_2.2);
-            Out(Err(l), out_2.1, errors)
+            Out(Err(l), out_2.1)
         } else {
             // seq_1 is when they both succeed
             assert!(out_1.0.is_ok() && out_2.0.is_ok());
-            let mut errors = out_1.2;
-            errors.extend(out_2.2);
-            Out(out_2.0, out_2.1, errors)
+            Out(out_2.0, out_2.1)
         }
     }
 
-    fn ordered_choice(&self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
-        let mut out_1 = self.peg(p1, x);
+    fn ordered_choice(&mut self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
+        let out_1 = self.peg(p1, x);
 
         // ord.1
         if out_1.0.is_ok() {
@@ -133,24 +134,21 @@ where
 
         // ord.3
         if out_2.0 == Err(None) {
-            out_1.2.extend(out_2.2);
-            return Out(Err(None), min(out_2.1, out_1.1), out_1.2);
+            return Out(Err(None), min(out_2.1, out_1.1));
         }
 
         // ord.4
         if let Ok(y) = out_2.0 {
-            out_1.2.extend(out_2.2);
-            return Out(Ok(y), min(out_2.1, out_1.1), out_1.2);
+            return Out(Ok(y), min(out_2.1, out_1.1));
         }
 
         // ord 5
-        out_1.2.extend(out_2.2);
-        Out(out_2.0, min(out_2.1, out_1.1), out_1.2)
+        Out(out_2.0, min(out_2.1, out_1.1))
     }
 
     // This one's a bit different. rep.1 tells us to stop when we hit a
     // [`Label::Fail`] and return the input.
-    fn repeat(&self, p: &Rule, x: Cursor) -> Out {
+    fn repeat(&mut self, p: &Rule, x: Cursor) -> Out {
         let mut x = x;
         loop {
             let mut out = self.peg(p, x);
@@ -171,31 +169,37 @@ where
     }
 
     // not_1 and not_2
-    fn not(&self, rule: &Rule, x: Cursor) -> Out {
+    fn not(&mut self, rule: &Rule, x: Cursor) -> Out {
+        // We don't want to keep any errors collected while running the rule.
+        let errors = self.errors.len();
+
         let out = self.peg(rule, x);
+
+        self.errors.truncate(errors);
+
         if out.0.is_err() {
-            Out(Ok(x), None, Vec::new())
+            Out(Ok(x), None)
         } else {
-            Out(Err(None), None, Vec::new())
+            Out(Err(None), None)
         }
     }
 
-    fn throw(&self, l: &Label, x: Cursor) -> Out {
-        let Some(recovery) = self.strategies.get(l) else {
+    fn throw(&mut self, l: Label, x: Cursor) -> Out {
+        let Some(recovery) = self.strategy(l) else {
             // throw_1 is when l is not in R
-            return Out(Err(*l), Some(x), Vec::new());
+            return Out(Err(l), Some(x));
         };
 
         let mut out = self.peg(recovery, x);
 
         if let Err(l2) = out.0 {
             // throw_3
+            self.errors.push((x, l));
             out.0 = Err(l2);
-            out.2.push((x, *l));
             out
         } else {
             // throw_2
-            out.2.push((x, *l));
+            self.errors.push((x, l));
             out
         }
     }

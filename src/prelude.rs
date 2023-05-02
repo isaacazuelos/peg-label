@@ -1,6 +1,6 @@
 //! A bunch of helpers for defining rules.
 
-pub use crate::{Grammar, Label, Rule};
+pub use crate::{Label, Parser, Rule};
 
 /// p1 p2
 pub fn seq(p1: Rule, p2: Rule) -> Rule {
