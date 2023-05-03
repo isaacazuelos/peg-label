@@ -1,34 +1,33 @@
 //! A bunch of helpers for defining rules.
 
-use crate::Terminal;
-pub use crate::{Label, Parser, Rule};
+pub use crate::{Label, Language, NonTerminal, Parser, Rule, Terminal};
 
 /// p1 p2
-pub fn seq<T: Terminal>(p1: Rule<T>, p2: Rule<T>) -> Rule<T> {
+pub fn seq<L: Language>(p1: Rule<L>, p2: Rule<L>) -> Rule<L> {
     Rule::Sequence(Box::new((p1, p2)))
 }
 
 /// p1 | p2
-pub fn alt<T: Terminal>(p1: Rule<T>, p2: Rule<T>) -> Rule<T> {
+pub fn alt<L: Language>(p1: Rule<L>, p2: Rule<L>) -> Rule<L> {
     Rule::OrderedChoice(Box::new((p1, p2)))
 }
 
 /// p*
-pub fn star<T: Terminal>(p: Rule<T>) -> Rule<T> {
+pub fn star<L: Language>(p: Rule<L>) -> Rule<L> {
     Rule::Repeat(Box::new(p))
 }
 
 /// !p
-pub fn not<T: Terminal>(p: Rule<T>) -> Rule<T> {
+pub fn not<L: Language>(p: Rule<L>) -> Rule<L> {
     Rule::Not(Box::new(p))
 }
 
 /// ^label
-pub fn throw<T: Terminal>(label: Label) -> Rule<T> {
+pub fn throw<L: Language>(label: Label) -> Rule<L> {
     Rule::Throw(label)
 }
 
 /// [p]^l, i.e. (p | ^l)
-pub fn label<T: Terminal>(rule: Rule<T>, label: Label) -> Rule<T> {
+pub fn label<L: Language>(rule: Rule<L>, label: Label) -> Rule<L> {
     Rule::OrderedChoice(Box::new((rule, Rule::Throw(label))))
 }

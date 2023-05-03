@@ -47,7 +47,7 @@ pub trait TerminalTag: PartialEq + Clone + Copy {}
 ///
 /// In a rule like `block = '{' statements ' }'`, `block` and `statement` would
 /// be non-terminals.
-pub type NonTerminal = u32;
+pub trait NonTerminal: PartialEq {}
 
 /// Labels for errors and their corresponding recovery strategies.
 ///
@@ -113,12 +113,10 @@ impl<T: Terminal> Input for &[T] {
     }
 }
 
-pub type Out = Result<Cursor, Label>;
-
-pub enum Rule<T: Terminal> {
+pub enum Rule<L: Language + ?Sized> {
     Empty,
-    Terminal(T::Tag),
-    NonTerminal(NonTerminal),
+    Terminal(<L::Token as Terminal>::Tag),
+    NonTerminal(L::RuleName),
     Sequence(Box<(Self, Self)>),
     OrderedChoice(Box<(Self, Self)>),
     Repeat(Box<Self>),
@@ -126,37 +124,37 @@ pub enum Rule<T: Terminal> {
     Throw(Label),
 }
 
-pub struct Recover<T> {
-    pub strategies: HashMap<Label, T>,
+pub struct Recover<T, L> {
+    pub strategies: HashMap<L, T>,
 }
 
 pub trait Language {
     type Token: Terminal;
-    const START: NonTerminal;
+    type RuleName: NonTerminal;
+    const START: Self::RuleName;
 
-    fn rule(&self, name: &NonTerminal) -> &Rule<Self::Token>;
-    fn recovery(&self, label: &Label) -> Option<&Rule<Self::Token>>;
+    fn rule(&self, name: &Self::RuleName) -> &Rule<Self>;
+    fn recovery(&self, label: &Label) -> Option<&Rule<Self>>;
 }
 
-pub struct Parser<'l, L, I> {
-    language: &'l L,
+pub struct Parser<'a, L: Language, I: Input<Token = L::Token>> {
+    language: &'a L,
     input: I,
     furthest: Option<Cursor>,
     errors: Vec<(Cursor, Label)>,
 }
 
-impl<'l, L, I, T, K> Parser<'l, L, I>
+impl<'a, L, I, T> Parser<'a, L, I>
 where
     L: Language<Token = T>,
     I: Input<Token = T>,
-    T: Terminal<Tag = K>,
-    K: TerminalTag,
+    T: Terminal,
 {
-    pub fn strategy(&self, label: &Label) -> Option<&'l Rule<T>> {
+    pub fn strategy(&self, label: &Label) -> Option<&'a Rule<L>> {
         self.language.recovery(label)
     }
 
-    pub fn peg(&mut self, p: &Rule<T>, x: Cursor) -> Out {
+    pub fn peg(&mut self, p: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
         match p {
             Rule::Empty => self.empty_1(x),
             Rule::Terminal(a) => self.terminal(*a, x),
@@ -169,11 +167,11 @@ where
         }
     }
 
-    fn empty_1(&mut self, x: Cursor) -> Out {
+    fn empty_1(&mut self, x: Cursor) -> Result<Cursor, Label> {
         Ok(x)
     }
 
-    fn terminal(&mut self, a: T::Tag, ax: Cursor) -> Out {
+    fn terminal(&mut self, a: <L::Token as Terminal>::Tag, ax: Cursor) -> Result<Cursor, Label> {
         match self.input.at_cursor(ax) {
             // term_1
             Some(b) if b.tag() == a => Ok(self.input.next(ax)),
@@ -191,14 +189,14 @@ where
     }
 
     /// both var_1 and var_1
-    fn non_terminal(&mut self, pa: &NonTerminal, x: Cursor) -> Out {
+    fn non_terminal(&mut self, pa: &L::RuleName, x: Cursor) -> Result<Cursor, Label> {
         let a = self.language.rule(pa);
         self.peg(a, x)
     }
 
     /// seq_{1-4}
-    fn sequence(&mut self, p1: &Rule<T>, p2: &Rule<T>, x: Cursor) -> Out {
-        let out_1: Out = self.peg(p1, x);
+    fn sequence(&mut self, p1: &Rule<L>, p2: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
+        let out_1 = self.peg(p1, x);
 
         // seq_4 is when p1 fails or throws
         let Ok(x2) = out_1 else  {
@@ -223,7 +221,7 @@ where
         }
     }
 
-    fn ordered_choice(&mut self, p1: &Rule<T>, p2: &Rule<T>, x: Cursor) -> Out {
+    fn ordered_choice(&mut self, p1: &Rule<L>, p2: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
         let out_1 = self.peg(p1, x);
 
         // ord.1
@@ -260,7 +258,7 @@ where
 
     // This one's a bit different. rep.1 tells us to stop when we hit a
     // [`Label::Fail`] and return the input.
-    fn repeat(&mut self, p: &Rule<T>, x: Cursor) -> Out {
+    fn repeat(&mut self, p: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
         let mut x = x;
         loop {
             let out = self.peg(p, x);
@@ -283,7 +281,7 @@ where
     }
 
     // not_1 and not_2
-    fn not(&mut self, rule: &Rule<T>, x: Cursor) -> Out {
+    fn not(&mut self, rule: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
         // We don't want to keep any errors collected while running the rule.
         let errors = self.errors.len();
         let furthest = self.furthest;
@@ -299,7 +297,7 @@ where
         }
     }
 
-    fn throw(&mut self, l: Label, x: Cursor) -> Out {
+    fn throw(&mut self, l: Label, x: Cursor) -> Result<Cursor, Label> {
         let Some(recovery) = self.strategy(&l) else {
             // throw_1 is when l is not in R
             self.furthest = Some(x);
