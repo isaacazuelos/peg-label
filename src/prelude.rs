@@ -1,33 +1,34 @@
 //! A bunch of helpers for defining rules.
 
+use crate::Terminal;
 pub use crate::{Label, Parser, Rule};
 
 /// p1 p2
-pub fn seq(p1: Rule, p2: Rule) -> Rule {
+pub fn seq<T: Terminal>(p1: Rule<T>, p2: Rule<T>) -> Rule<T> {
     Rule::Sequence(Box::new((p1, p2)))
 }
 
 /// p1 | p2
-pub fn alt(p1: Rule, p2: Rule) -> Rule {
+pub fn alt<T: Terminal>(p1: Rule<T>, p2: Rule<T>) -> Rule<T> {
     Rule::OrderedChoice(Box::new((p1, p2)))
 }
 
 /// p*
-pub fn star(p: Rule) -> Rule {
+pub fn star<T: Terminal>(p: Rule<T>) -> Rule<T> {
     Rule::Repeat(Box::new(p))
 }
 
 /// !p
-pub fn not(p: Rule) -> Rule {
+pub fn not<T: Terminal>(p: Rule<T>) -> Rule<T> {
     Rule::Not(Box::new(p))
 }
 
 /// ^label
-pub fn throw(label: Label) -> Rule {
+pub fn throw<T: Terminal>(label: Label) -> Rule<T> {
     Rule::Throw(label)
 }
 
 /// [p]^l, i.e. (p | ^l)
-pub fn label(rule: Rule, label: Label) -> Rule {
+pub fn label<T: Terminal>(rule: Rule<T>, label: Label) -> Rule<T> {
     Rule::OrderedChoice(Box::new((rule, Rule::Throw(label))))
 }

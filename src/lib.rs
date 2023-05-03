@@ -4,61 +4,159 @@
 //!
 //! [1]: https://arxiv.org/abs/1806.11150
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug};
 
 pub mod prelude;
 
-// An offset into whatever we're parsing.
+/// An offset into whatever we're parsing.
 pub type Cursor = usize;
-pub type Terminal = char;
+
+/// Each 'terminal' symbol, the pieces of input.
+///
+/// This would typically be something like token type, `char` or `u8`.
+///
+/// In a rule like `block = '{' statements ' }'`, the `'{'` and `'}'` would be
+/// terminals.
+///
+/// Tokens types could conceivably contain references to associated errata
+/// (like whitespace, comments, location tracking info, `&str`, etc.) that we
+/// don't necessarily want to use when comparing tokens to some terminal in a
+/// rule.
+///
+/// Each terminal instead can produce a 'Tag' that's used in rules, and for
+/// comparison, that doesn't have any of errata.
+///
+/// So you might have code like this:
+///
+/// ``` no-run
+/// enum Kind { Identifier, OpenParen, CloseParen, Add, Sub, Mul, Div }
+/// enum Token { kind: Kind, location: Range<usize> }
+///
+/// impl TerminalTag for Kind { ... }
+/// impl Terminal for Token { type Tag = Kind; ... }
+/// ```
+pub trait Terminal: Debug + Clone + Copy {
+    type Tag: TerminalTag;
+    fn tag(&self) -> Self::Tag;
+}
+
+pub trait TerminalTag: PartialEq + Clone + Copy {}
+
+/// Each 'non terminal' symbol. These are the names, or the right-hand
+/// side of a production rules in a grammar.
+///
+/// In a rule like `block = '{' statements ' }'`, `block` and `statement` would
+/// be non-terminals.
 pub type NonTerminal = u32;
+
+/// Labels for errors and their corresponding recovery strategies.
+///
+/// An option is used here were `None` is the _Fail_ state in the paper -- it
+/// signifies that a rule did not succeed, but also consumed no input and
+/// produced no errors.
 pub type Label = Option<u32>;
 
+/// Input types are indexable sequences of [`Terminal`] values.
+///
+/// This is nearly, but not quite the same as [`Index<Cursor>`][1], where
+/// instead we want to use leverage [`Token`] being `Copy` and not return
+/// a reference.
+///
+/// We also need a way to increment the [`Cursor`] (i.e. a [`usize`]) by more
+/// than 1 at a time, so we can support `&str` and it's multi-byte characters.
+///
+/// [1]: std::ops::Index
 pub trait Input {
-    fn at_cursor(&self, cursor: Cursor) -> Option<Terminal>;
+    type Token: Terminal;
+    fn at_cursor(&self, cursor: Cursor) -> Option<Self::Token>;
     fn next(&self, cursor: Cursor) -> Cursor;
 }
 
-pub struct Out(Result<Cursor, Label>);
+impl TerminalTag for char {}
+impl TerminalTag for u8 {}
 
-pub enum Rule {
+impl Terminal for char {
+    type Tag = Self;
+    fn tag(&self) -> Self::Tag {
+        *self
+    }
+}
+
+impl Terminal for u8 {
+    type Tag = Self;
+    fn tag(&self) -> Self::Tag {
+        *self
+    }
+}
+
+impl<'a> Input for &'a str {
+    type Token = char;
+
+    fn at_cursor(&self, cursor: Cursor) -> Option<Self::Token> {
+        self[cursor..].chars().next()
+    }
+
+    fn next(&self, cursor: Cursor) -> Cursor {
+        cursor + self.at_cursor(cursor).map(char::len_utf8).unwrap_or(1)
+    }
+}
+
+impl<T: Terminal> Input for &[T] {
+    type Token = T;
+
+    fn at_cursor(&self, cursor: Cursor) -> Option<Self::Token> {
+        self.get(cursor).cloned()
+    }
+
+    fn next(&self, cursor: Cursor) -> Cursor {
+        cursor + 1
+    }
+}
+
+pub type Out = Result<Cursor, Label>;
+
+pub enum Rule<T: Terminal> {
     Empty,
-    Terminal(Terminal),
+    Terminal(T::Tag),
     NonTerminal(NonTerminal),
-    Sequence(Box<(Rule, Rule)>),
-    OrderedChoice(Box<(Rule, Rule)>),
-    Repeat(Box<Rule>),
-    Not(Box<Rule>),
+    Sequence(Box<(Self, Self)>),
+    OrderedChoice(Box<(Self, Self)>),
+    Repeat(Box<Self>),
+    Not(Box<Self>),
     Throw(Label),
 }
 
-pub struct Recover {
-    pub strategies: HashMap<Label, Rule>,
+pub struct Recover<T> {
+    pub strategies: HashMap<Label, T>,
 }
 
-/// We put these in a separate structure so that we can know the language
-/// definition doesn't change mid-parse.
-pub struct Language {
-    rules: HashMap<NonTerminal, Rule>,
-    strategies: HashMap<Label, Rule>,
+pub trait Language {
+    type Token: Terminal;
+    const START: NonTerminal;
+
+    fn rule(&self, name: &NonTerminal) -> &Rule<Self::Token>;
+    fn recovery(&self, label: &Label) -> Option<&Rule<Self::Token>>;
 }
 
-pub struct Parser<'l, I> {
-    language: &'l Language,
+pub struct Parser<'l, L, I> {
+    language: &'l L,
     input: I,
     furthest: Option<Cursor>,
     errors: Vec<(Cursor, Label)>,
 }
 
-impl<'l, I> Parser<'l, I>
+impl<'l, L, I, T, K> Parser<'l, L, I>
 where
-    I: Input,
+    L: Language<Token = T>,
+    I: Input<Token = T>,
+    T: Terminal<Tag = K>,
+    K: TerminalTag,
 {
-    pub fn strategy(&self, label: Label) -> Option<&'l Rule> {
-        self.language.strategies.get(&label)
+    pub fn strategy(&self, label: &Label) -> Option<&'l Rule<T>> {
+        self.language.recovery(label)
     }
 
-    pub fn peg(&mut self, p: &Rule, x: Cursor) -> Out {
+    pub fn peg(&mut self, p: &Rule<T>, x: Cursor) -> Out {
         match p {
             Rule::Empty => self.empty_1(x),
             Rule::Terminal(a) => self.terminal(*a, x),
@@ -72,38 +170,38 @@ where
     }
 
     fn empty_1(&mut self, x: Cursor) -> Out {
-        Out(Ok(x))
+        Ok(x)
     }
 
-    fn terminal(&mut self, a: Terminal, ax: Cursor) -> Out {
+    fn terminal(&mut self, a: T::Tag, ax: Cursor) -> Out {
         match self.input.at_cursor(ax) {
             // term_1
-            Some(b) if b == a => Out(Ok(self.input.next(ax))),
+            Some(b) if b.tag() == a => Ok(self.input.next(ax)),
             // term_2
             Some(_) => {
                 self.furthest = Some(ax);
-                Out(Err(None))
+                Err(None)
             }
             // term_3
             None => {
                 self.furthest = Some(ax);
-                Out(Err(None))
+                Err(None)
             }
         }
     }
 
     /// both var_1 and var_1
     fn non_terminal(&mut self, pa: &NonTerminal, x: Cursor) -> Out {
-        let a = &self.language.rules[pa];
+        let a = self.language.rule(pa);
         self.peg(a, x)
     }
 
     /// seq_{1-4}
-    fn sequence(&mut self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
+    fn sequence(&mut self, p1: &Rule<T>, p2: &Rule<T>, x: Cursor) -> Out {
         let out_1: Out = self.peg(p1, x);
 
         // seq_4 is when p1 fails or throws
-        let Ok(x2) = out_1.0 else  {
+        let Ok(x2) = out_1 else  {
             return out_1;
         };
 
@@ -111,34 +209,34 @@ where
 
         let out_2 = self.peg(p2, x2);
 
-        if let Err(None) = out_2.0 {
+        if let Err(None) = out_2 {
             // seq_2 is when p2 fails
             self.furthest = min(furthest_1, self.furthest);
-            Out(Err(None))
-        } else if let Err(l) = out_2.0 {
+            Err(None)
+        } else if let Err(l) = out_2 {
             // seq_3 is when p2 throws
-            Out(Err(l))
+            Err(l)
         } else {
             // seq_1 is when they both succeed
-            assert!(out_1.0.is_ok() && out_2.0.is_ok());
-            Out(out_2.0)
+            assert!(out_1.is_ok() && out_2.is_ok());
+            out_2
         }
     }
 
-    fn ordered_choice(&mut self, p1: &Rule, p2: &Rule, x: Cursor) -> Out {
+    fn ordered_choice(&mut self, p1: &Rule<T>, p2: &Rule<T>, x: Cursor) -> Out {
         let out_1 = self.peg(p1, x);
 
         // ord.1
-        if out_1.0.is_ok() {
+        if out_1.is_ok() {
             return out_1;
         }
 
         // ord.2
-        if matches!(out_1.0, Err(Some(_))) {
+        if matches!(out_1, Err(Some(_))) {
             return out_1;
         }
 
-        assert_eq!(out_1.0, Err(None));
+        assert_eq!(out_1, Err(None));
 
         let f1 = self.furthest;
         let out_2 = self.peg(p2, x);
@@ -147,43 +245,45 @@ where
         self.furthest = min(f1, f2);
 
         // ord.3
-        if out_2.0 == Err(None) {
-            return Out(Err(None));
+        if out_2 == Err(None) {
+            return Err(None);
         }
 
         // ord.4
-        if let Ok(y) = out_2.0 {
-            return Out(Ok(y));
+        if let Ok(y) = out_2 {
+            return Ok(y);
         }
 
         // ord 5
-        Out(out_2.0)
+        out_2
     }
 
     // This one's a bit different. rep.1 tells us to stop when we hit a
     // [`Label::Fail`] and return the input.
-    fn repeat(&mut self, p: &Rule, x: Cursor) -> Out {
+    fn repeat(&mut self, p: &Rule<T>, x: Cursor) -> Out {
         let mut x = x;
         loop {
-            let mut out = self.peg(p, x);
-            match out.0 {
+            let out = self.peg(p, x);
+            match out {
                 Err(None) => {
-                    out.0 = Ok(x);
-                    return out;
+                    // If it fails, i.e. consumes nothing, we return what's
+                    // left of the input.
+                    return Ok(x);
                 }
                 Err(_) => {
+                    // If it throws, we pass that label back up.
                     return out;
                 }
                 Ok(x2) => {
+                    // If it succeeds, we update the cursor and try again.
                     x = x2;
-                    // todo: We should be keeping errors here.
                 }
             }
         }
     }
 
     // not_1 and not_2
-    fn not(&mut self, rule: &Rule, x: Cursor) -> Out {
+    fn not(&mut self, rule: &Rule<T>, x: Cursor) -> Out {
         // We don't want to keep any errors collected while running the rule.
         let errors = self.errors.len();
         let furthest = self.furthest;
@@ -193,26 +293,25 @@ where
         self.errors.truncate(errors);
         self.furthest = furthest;
 
-        if out.0.is_err() {
-            Out(Ok(x))
-        } else {
-            Out(Err(None))
+        match out {
+            Ok(_) => Err(None),
+            Err(_) => Ok(x),
         }
     }
 
     fn throw(&mut self, l: Label, x: Cursor) -> Out {
-        let Some(recovery) = self.strategy(l) else {
+        let Some(recovery) = self.strategy(&l) else {
             // throw_1 is when l is not in R
             self.furthest = Some(x);
-            return Out(Err(l));
+            return Err(l);
         };
 
         let mut out = self.peg(recovery, x);
 
-        if let Err(l2) = out.0 {
+        if let Err(l2) = out {
             // throw_3
             self.errors.push((x, l));
-            out.0 = Err(l2);
+            out = Err(l2);
             out
         } else {
             // throw_2
