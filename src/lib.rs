@@ -18,36 +18,39 @@ pub type Cursor = usize;
 /// In a rule like `block = '{' statements ' }'`, the `'{'` and `'}'` would be
 /// terminals.
 ///
-/// Tokens types could conceivably contain references to associated errata
+/// Your token type could conceivably contain references to associated errata
 /// (like whitespace, comments, location tracking info, `&str`, etc.) that we
 /// don't necessarily want to use when comparing tokens to some terminal in a
 /// rule.
 ///
-/// Each terminal instead can produce a 'Tag' that's used in rules, and for
-/// comparison, that doesn't have any of errata.
-///
-/// So you might have code like this:
+/// In these cases where you probably don't want to use the full Token type
+/// when parsing, you can instead use the [`Input`] implementation for your
+/// collection/lexer type to pull out only the important part.
 ///
 /// ``` no-run
 /// enum Kind { Identifier, OpenParen, CloseParen, Add, Sub, Mul, Div }
 /// enum Token { kind: Kind, location: Range<usize> }
 ///
-/// impl TerminalTag for Kind { ... }
-/// impl Terminal for Token { type Tag = Kind; ... }
+/// impl Terminal for Kind { ... }
+/// impl Input for Vec<Token> { type Token = Kind; ... }
 /// ```
-pub trait Terminal: Debug + Clone + Copy {
-    type Tag: TerminalTag;
-    fn tag(&self) -> Self::Tag;
-}
-
-pub trait TerminalTag: PartialEq + Clone + Copy {}
+pub trait Terminal: Debug + Clone + PartialEq {}
 
 /// Each 'non terminal' symbol. These are the names, or the right-hand
 /// side of a production rules in a grammar.
 ///
 /// In a rule like `block = '{' statements ' }'`, `block` and `statement` would
 /// be non-terminals.
+///
+/// You can use numbers for these, or &'static str, if you're not sure where to
+/// start when prototyping. A bare `enum` works great too.
 pub trait NonTerminal: PartialEq {}
+
+impl NonTerminal for u8 {}
+impl NonTerminal for u16 {}
+impl NonTerminal for u32 {}
+impl NonTerminal for u64 {}
+impl NonTerminal for usize {}
 
 /// Labels for errors and their corresponding recovery strategies.
 ///
@@ -72,22 +75,8 @@ pub trait Input {
     fn next(&self, cursor: Cursor) -> Cursor;
 }
 
-impl TerminalTag for char {}
-impl TerminalTag for u8 {}
-
-impl Terminal for char {
-    type Tag = Self;
-    fn tag(&self) -> Self::Tag {
-        *self
-    }
-}
-
-impl Terminal for u8 {
-    type Tag = Self;
-    fn tag(&self) -> Self::Tag {
-        *self
-    }
-}
+impl Terminal for char {}
+impl Terminal for u8 {}
 
 impl<'a> Input for &'a str {
     type Token = char;
@@ -115,7 +104,7 @@ impl<T: Terminal> Input for &[T] {
 
 pub enum Rule<L: Language + ?Sized> {
     Empty,
-    Terminal(<L::Token as Terminal>::Tag),
+    Terminal(L::Token),
     NonTerminal(L::RuleName),
     Sequence(Box<(Self, Self)>),
     OrderedChoice(Box<(Self, Self)>),
@@ -157,7 +146,7 @@ where
     pub fn peg(&mut self, p: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
         match p {
             Rule::Empty => self.empty_1(x),
-            Rule::Terminal(a) => self.terminal(*a, x),
+            Rule::Terminal(a) => self.terminal(a, x),
             Rule::NonTerminal(pa) => self.non_terminal(pa, x),
             Rule::Sequence(ps) => self.sequence(&ps.0, &ps.1, x),
             Rule::OrderedChoice(ps) => self.ordered_choice(&ps.0, &ps.1, x),
@@ -171,10 +160,10 @@ where
         Ok(x)
     }
 
-    fn terminal(&mut self, a: <L::Token as Terminal>::Tag, ax: Cursor) -> Result<Cursor, Label> {
+    fn terminal(&mut self, a: &L::Token, ax: Cursor) -> Result<Cursor, Label> {
         match self.input.at_cursor(ax) {
             // term_1
-            Some(b) if b.tag() == a => Ok(self.input.next(ax)),
+            Some(b) if &b == a => Ok(self.input.next(ax)),
             // term_2
             Some(_) => {
                 self.furthest = Some(ax);
