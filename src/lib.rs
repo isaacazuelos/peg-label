@@ -31,7 +31,7 @@ pub type Cursor = usize;
 /// enum Kind { Identifier, OpenParen, CloseParen, Add, Sub, Mul, Div }
 /// enum Token { kind: Kind, location: Range<usize> }
 ///
-/// impl Terminal for Kind { ... }
+/// impl Terminal for Kind {  }
 /// impl Input for Vec<Token> { type Token = Kind; ... }
 /// ```
 pub trait Terminal: Debug + Clone + PartialEq {}
@@ -130,6 +130,7 @@ pub struct Parser<'a, L: Language, I: Input<Token = L::Token>> {
     language: &'a L,
     input: I,
     furthest: Option<Cursor>,
+    recovery_status: usize,
     errors: Vec<(Cursor, Label)>,
 }
 
@@ -140,7 +141,11 @@ where
     T: Terminal,
 {
     pub fn strategy(&self, label: &Label) -> Option<&'a Rule<L>> {
-        self.language.recovery(label)
+        if self.is_recovery_enabled() {
+            self.language.recovery(label)
+        } else {
+            None
+        }
     }
 
     pub fn peg(&mut self, p: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
@@ -271,7 +276,7 @@ where
 
     // not_1 and not_2
     fn not(&mut self, rule: &Rule<L>, x: Cursor) -> Result<Cursor, Label> {
-        // We don't want to keep any errors collected while running the rule.
+        self.disable_recovery();
         let errors = self.errors.len();
         let furthest = self.furthest;
 
@@ -279,6 +284,7 @@ where
 
         self.errors.truncate(errors);
         self.furthest = furthest;
+        self.enable_recovery();
 
         match out {
             Ok(_) => Err(None),
@@ -305,6 +311,18 @@ where
             self.errors.push((x, l));
             out
         }
+    }
+
+    fn is_recovery_enabled(&self) -> bool {
+        self.recovery_status == 0
+    }
+
+    fn enable_recovery(&mut self) {
+        self.recovery_status -= 1;
+    }
+
+    fn disable_recovery(&mut self) {
+        self.recovery_status += 1;
     }
 }
 
