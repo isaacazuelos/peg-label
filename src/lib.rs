@@ -44,20 +44,21 @@ pub trait Terminal: Debug + Clone + PartialEq {}
 ///
 /// You can use numbers for these, or &'static str, if you're not sure where to
 /// start when prototyping. A bare `enum` works great too.
-pub trait NonTerminal: PartialEq {}
+pub trait NonTerminal: PartialEq + Clone {}
 
 impl NonTerminal for u8 {}
 impl NonTerminal for u16 {}
 impl NonTerminal for u32 {}
 impl NonTerminal for u64 {}
 impl NonTerminal for usize {}
+impl<'a> NonTerminal for &'a str {}
 
 /// Labels for errors and their corresponding recovery strategies.
 ///
 /// An option is used here were `None` is the _Fail_ state in the paper -- it
 /// signifies that a rule did not succeed, but also consumed no input and
 /// produced no errors.
-pub type Label = Option<u32>;
+pub type Label = Option<&'static str>; // TODO: update to Label<N: NonTerminal>
 
 /// Input types are indexable sequences of [`Terminal`] values.
 ///
@@ -113,6 +114,21 @@ pub enum Rule<L: Language + ?Sized> {
     Throw(Label),
 }
 
+impl<L: Language + ?Sized> Clone for Rule<L> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Terminal(arg0) => Self::Terminal(arg0.clone()),
+            Self::NonTerminal(arg0) => Self::NonTerminal(arg0.clone()),
+            Self::Sequence(arg0) => Self::Sequence(arg0.clone()),
+            Self::OrderedChoice(arg0) => Self::OrderedChoice(arg0.clone()),
+            Self::Repeat(arg0) => Self::Repeat(arg0.clone()),
+            Self::Not(arg0) => Self::Not(arg0.clone()),
+            Self::Throw(arg0) => Self::Throw(*arg0),
+        }
+    }
+}
+
 pub struct Recover<T, L> {
     pub strategies: HashMap<L, T>,
 }
@@ -123,7 +139,7 @@ pub trait Language {
     const START: Self::RuleName;
 
     fn rule(&self, name: &Self::RuleName) -> &Rule<Self>;
-    fn recovery(&self, label: &Label) -> Option<&Rule<Self>>;
+    fn recovery(&self, label: Label) -> Option<&Rule<Self>>;
 }
 
 pub struct Parser<'a, L: Language, I: Input<Token = L::Token>> {
@@ -140,7 +156,37 @@ where
     I: Input<Token = T>,
     T: Terminal,
 {
-    pub fn strategy(&self, label: &Label) -> Option<&'a Rule<L>> {
+    pub fn new(language: &'a L, input: I) -> Self {
+        Self {
+            language,
+            input,
+            furthest: None,
+            recovery_status: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    /// For now, it just returns `true` on a successful parse, and `false` if
+    /// there were errors.
+    pub fn parse(&mut self) -> Result<(), Vec<(usize, Label)>> {
+        match self.peg(&Rule::NonTerminal(L::START), 0) {
+            Err(thrown) => {
+                let mut es = self.errors.clone();
+                es.push((self.furthest.unwrap_or(0), thrown));
+                Err(es)
+            }
+
+            Ok(_) => {
+                if self.errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(self.errors.clone())
+                }
+            }
+        }
+    }
+
+    pub fn strategy(&self, label: Label) -> Option<&'a Rule<L>> {
         if self.is_recovery_enabled() {
             self.language.recovery(label)
         } else {
@@ -293,7 +339,7 @@ where
     }
 
     fn throw(&mut self, l: Label, x: Cursor) -> Result<Cursor, Label> {
-        let Some(recovery) = self.strategy(&l) else {
+        let Some(recovery) = self.strategy(l) else {
             // throw_1 is when l is not in R
             self.furthest = Some(x);
             return Err(l);
