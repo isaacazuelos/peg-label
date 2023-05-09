@@ -4,7 +4,7 @@
 //!
 //! [1]: https://arxiv.org/abs/1806.11150
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 pub mod prelude;
 
@@ -115,6 +115,34 @@ pub enum Rule<L: Language + ?Sized> {
     Throw(Label),
 }
 
+impl<L: Language + ?Sized> std::fmt::Display for Rule<L>
+where
+    L::Token: Display,
+    L::RuleName: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn needs_parens<L: Language + ?Sized>(r: &Rule<L>) -> bool {
+            matches!(r, Rule::Sequence(_) | Rule::OrderedChoice(_))
+        }
+
+        match self {
+            Rule::Empty => write!(f, "ε"),
+            Rule::Terminal(t) => write!(f, "{t}"),
+            Rule::NonTerminal(nt) => write!(f, "{nt}"),
+            Rule::Sequence(rs) => write!(f, "{} & {}", rs.0, rs.1),
+            Rule::OrderedChoice(rs) => write!(f, "{} | {}", rs.0, rs.1),
+            Rule::Repeat(r) if needs_parens(r) => write!(f, "({r})*"),
+            Rule::Repeat(r) => write!(f, "{r}*"),
+            Rule::Not(r) if needs_parens(r) => write!(f, "!({r})"),
+            Rule::Not(r) => write!(f, "!{r}"),
+            Rule::Throw(None) => write!(f, "fail"),
+            Rule::Throw(Some(l)) => write!(f, "#{l}"),
+        }
+    }
+}
+
+// Can't use `derive(Clone)` as it looks for `L: Clone`, which we don't
+// actually need.
 impl<L: Language + ?Sized> Clone for Rule<L> {
     fn clone(&self) -> Self {
         match self {
