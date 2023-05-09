@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use peg_label::prelude::*;
 
+#[derive(Debug)]
 struct L {
     rules: HashMap<&'static str, Rule<Self>>,
     recoveries: HashMap<&'static str, Rule<Self>>,
@@ -14,11 +15,32 @@ impl Default for L {
         let rules: HashMap<<Self as Language>::RuleName, Rule<Self>> = [
             (
                 "start",
-                alt_m(&[e(), nt("paren"), nt("brace"), nt("bracket")]),
+                alt_m(&[nt("paren"), nt("brace"), nt("bracket"), e()]),
             ),
-            ("paren", seq_m(&[t('('), t(')')])),
-            ("brace", seq_m(&[t('{'), t('}')])),
-            ("bracket", seq_m(&[t('['), t(']')])),
+            (
+                "paren",
+                seq_m(&[
+                    t('('),
+                    nt("start"),
+                    label(t(')'), Some("missing_close_paren")),
+                ]),
+            ),
+            (
+                "brace",
+                seq_m(&[
+                    t('{'),
+                    nt("start"),
+                    label(t('}'), Some("missing_close_brace")),
+                ]),
+            ),
+            (
+                "bracket",
+                seq_m(&[
+                    t('['),
+                    nt("start"),
+                    label(t(']'), Some("missing_close_bracket")),
+                ]),
+            ),
         ]
         .into_iter()
         .collect();
@@ -45,23 +67,34 @@ impl Language for L {
     }
 }
 
-fn parse(input: &str) -> Result<(), Vec<(usize, Label)>> {
-    let lang = L::default();
-    let mut p = Parser::new(&lang, input);
-    p.parse()
-}
-
 #[test]
 fn empty() {
-    assert!(parse("").is_ok())
+    let input = "";
+    let lang = L::default();
+    let mut p = Parser::new(&lang, input);
+    let result = p.parse();
+    assert!(result.is_ok(), "result was {:?}", result);
 }
 
 #[test]
 fn simple() {
-    assert!(parse("([{()}])").is_ok())
+    let input = "([{()}])";
+    let lang = L::default();
+    let mut p = Parser::new(&lang, input);
+    let result = p.parse();
+    assert!(result.is_ok(), "result was {:?}", result);
 }
 
 #[test]
 fn simple_fail() {
-    assert!(parse("([{(}])").is_err())
+    let input = "([{(}])";
+    let lang = L::default();
+    let mut p = Parser::new(&lang, input);
+    let result = p.parse();
+    assert!(
+        result.is_err(),
+        "result was {:?} from parser {:?}",
+        result,
+        p
+    );
 }

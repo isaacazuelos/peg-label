@@ -4,7 +4,7 @@
 //!
 //! [1]: https://arxiv.org/abs/1806.11150
 
-use std::{collections::HashMap, fmt::Debug};
+use std::fmt::Debug;
 
 pub mod prelude;
 
@@ -27,12 +27,12 @@ pub type Cursor = usize;
 /// when parsing, you can instead use the [`Input`] implementation for your
 /// collection/lexer type to pull out only the important part.
 ///
-/// ``` no-run
+/// ``` txt
 /// enum Kind { Identifier, OpenParen, CloseParen, Add, Sub, Mul, Div }
 /// enum Token { kind: Kind, location: Range<usize> }
 ///
 /// impl Terminal for Kind {  }
-/// impl Input for Vec<Token> { type Token = Kind; ... }
+/// impl Input for Vec<Token> { type Token = Kind; }
 /// ```
 pub trait Terminal: Debug + Clone + PartialEq {}
 
@@ -103,6 +103,7 @@ impl<T: Terminal> Input for &[T] {
     }
 }
 
+#[derive(Debug)]
 pub enum Rule<L: Language + ?Sized> {
     Empty,
     Terminal(L::Token),
@@ -129,11 +130,7 @@ impl<L: Language + ?Sized> Clone for Rule<L> {
     }
 }
 
-pub struct Recover<T, L> {
-    pub strategies: HashMap<L, T>,
-}
-
-pub trait Language {
+pub trait Language: Debug {
     type Token: Terminal;
     type RuleName: NonTerminal;
     const START: Self::RuleName;
@@ -142,6 +139,7 @@ pub trait Language {
     fn recovery(&self, label: Label) -> Option<&Rule<Self>>;
 }
 
+#[derive(Debug)]
 pub struct Parser<'a, L: Language, I: Input<Token = L::Token>> {
     language: &'a L,
     input: I,
