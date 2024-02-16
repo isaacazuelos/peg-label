@@ -57,7 +57,7 @@ impl Language for L {
 
     const START: Self::RuleName = "start";
 
-    fn rule(&self, name: &Self::RuleName) -> &peg_label::Rule<Self> {
+    fn rule(&self, name: Self::RuleName) -> &peg_label::Rule<Self> {
         &self.rules[name]
     }
 

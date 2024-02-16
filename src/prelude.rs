@@ -3,17 +3,17 @@
 pub use crate::{Label, Language, NonTerminal, Parser, Rule, Terminal};
 
 /// ε, the rule which accepts the empty string
-pub fn e<L: Language>() -> Rule<L> {
+pub const fn e<L: Language>() -> Rule<L> {
     Rule::Empty
 }
 
 /// terminal t
-pub fn t<L: Language>(token: L::Token) -> Rule<L> {
+pub const fn t<L: Language>(token: L::Token) -> Rule<L> {
     Rule::Terminal(token)
 }
 
 /// non-terminal n
-pub fn nt<L: Language>(n: L::RuleName) -> Rule<L> {
+pub const fn nt<L: Language>(n: L::RuleName) -> Rule<L> {
     Rule::NonTerminal(n)
 }
 

@@ -1,4 +1,4 @@
-//! Peggy, a test for recovering PEG parsers.
+//! peg-label, a test for recovering PEG parsers.
 //!
 //! [Syntax Error Recovery in Parsing Expression Grammars][1]
 //!
@@ -44,7 +44,7 @@ pub trait Terminal: Debug + Clone + PartialEq {}
 ///
 /// You can use numbers for these, or &'static str, if you're not sure where to
 /// start when prototyping. A bare `enum` works great too.
-pub trait NonTerminal: PartialEq + Clone {}
+pub trait NonTerminal: PartialEq + Clone + Copy {}
 
 impl NonTerminal for u8 {}
 impl NonTerminal for u16 {}
@@ -163,7 +163,7 @@ pub trait Language: Debug {
     type RuleName: NonTerminal;
     const START: Self::RuleName;
 
-    fn rule(&self, name: &Self::RuleName) -> &Rule<Self>;
+    fn rule(&self, name: Self::RuleName) -> &Rule<Self>;
     fn recovery(&self, label: Label) -> Option<&Rule<Self>>;
 }
 
@@ -224,7 +224,7 @@ where
         match p {
             Rule::Empty => self.empty_1(x),
             Rule::Terminal(a) => self.terminal(a, x),
-            Rule::NonTerminal(pa) => self.non_terminal(pa, x),
+            Rule::NonTerminal(pa) => self.non_terminal(*pa, x),
             Rule::Sequence(ps) => self.sequence(&ps.0, &ps.1, x),
             Rule::OrderedChoice(ps) => self.ordered_choice(&ps.0, &ps.1, x),
             Rule::Repeat(p) => self.repeat(p, x),
@@ -255,7 +255,7 @@ where
     }
 
     /// both var_1 and var_1
-    fn non_terminal(&mut self, pa: &L::RuleName, x: Cursor) -> Result<Cursor, Label> {
+    fn non_terminal(&mut self, pa: L::RuleName, x: Cursor) -> Result<Cursor, Label> {
         let a = self.language.rule(pa);
         self.peg(a, x)
     }
@@ -265,7 +265,7 @@ where
         let out_1 = self.peg(p1, x);
 
         // seq_4 is when p1 fails or throws
-        let Ok(x2) = out_1 else  {
+        let Ok(x2) = out_1 else {
             return out_1;
         };
 
